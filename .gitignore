@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual env
+venv/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Env / secrets
+.env
+.env.*
+*.key
+
+# Model artifacts / cache
+artifacts/
+*.joblib
+*.pkl
+
+# Datasets (si son grandes o privados)
+*.csv
+*.parquet
+*.xlsx
+
+# Logs
+*.log
+
+# OS/IDE
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
