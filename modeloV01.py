@@ -3,16 +3,13 @@ modeloV01.py
 
 Modelo de recomendación nutricional basado en contenido.
 
-Este módulo:
-1. Carga el dataset de recetas y de usuarios(de prueba).
-2. Preprocesa variables numéricas y categóricas.
-3. Construye un dataset (usuario, receta).
-4. Define un score heurístico de qué tan bien una receta se ajusta a un usuario.
-5. Entrena un modelo de regresión (RandomForestRegressor) para aproximar ese score.
-6. Expone funciones para:
-   - Calcular calorías y macros ajustados del usuario.
-   - Recomendar recetas con ML + heurística.
-   - Generar un plan semanal (comidas/dia).
+✅ CORRECCIÓN PEDIDA (SIN tocar el entrenamiento):
+- Si almuerzo_cena_misma=True:
+  -> la Cena SIEMPRE es igual al Almuerzo del mismo día
+  -> y se elige el Almuerzo con MEJOR score_modelo disponible para ese día (top)
+- Si almuerzo_cena_misma=False:
+  -> se intenta que Almuerzo y Cena sean DIFERENTES dentro del mismo día (si hay opciones)
+  -> sin meter meriendas/postres en Cena por culpa del fallback
 """
 
 import os
@@ -34,7 +31,6 @@ import joblib
 
 BASE_DIR = "F:/ALL_STUDIES/SEMESTRE1_2025/TALLER_2/DATASET_DEF"
 
-# Ajusta rutas si tus CSV están en otra carpeta
 RUTA_RECETAS = os.path.join(BASE_DIR, "recetas_bolivianas_PRO_250.csv")
 RUTA_USUARIOS = os.path.join(BASE_DIR, "usuarios_con_dietas_restricciones.csv")
 
@@ -48,7 +44,6 @@ MODEL_PATH = ARTIFACTS_DIR / "rf_model.joblib"
 META_PATH = ARTIFACTS_DIR / "meta.joblib"
 RECETAS_PREP_PATH = ARTIFACTS_DIR / "recetas_preprocesadas.joblib"
 DATA_FINGERPRINT_PATH = ARTIFACTS_DIR / "data_fingerprint.txt"
-
 
 # ============================================================
 # 2) GLOBALES (se cargan en memoria al arrancar API)
@@ -67,27 +62,23 @@ def si_no_a_bin(valor):
     if valor is None or (isinstance(valor, float) and np.isnan(valor)):
         return 0
 
-    # string
     if isinstance(valor, str):
         v = valor.strip().lower()
         if v in ["si", "sí", "s", "yes", "y", "true", "t", "1"]:
             return 1
         if v in ["no", "n", "false", "f", "0", ""]:
             return 0
-        # si viene algo raro, intenta parsear
         try:
             return 1 if float(v) != 0 else 0
         except Exception:
             return 0
 
-    # numérico
     if isinstance(valor, (int, np.integer)):
         return 1 if int(valor) != 0 else 0
     if isinstance(valor, (float, np.floating)):
         return 1 if float(valor) != 0 else 0
 
     return 0
-
 
 
 def preprocesar_recetas(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str], List[str], List[str]]:
@@ -138,7 +129,7 @@ def preprocesar_recetas(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str], List
 
 
 # ============================================================
-# 4) PREPROCESAMIENTO USUARIOS 
+# 4) PREPROCESAMIENTO USUARIOS
 # ============================================================
 def preprocesar_usuarios(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
     df = df.copy()
@@ -156,7 +147,6 @@ def preprocesar_usuarios(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
             df[col] = 0
     df[cols_numericas_usuario] = df[cols_numericas_usuario].fillna(0)
 
-    # Sexo binario
     if "Sexo" in df.columns:
         df["Sexo_M"] = (
             df["Sexo"].astype(str).str.strip().str.upper()
@@ -168,7 +158,6 @@ def preprocesar_usuarios(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
         df["Sexo"] = "M"
         df["Sexo_M"] = 1
 
-    # Nivel actividad ordinal
     map_act = {"bajo": 1, "moderado": 2, "alto": 3}
     if "Nivel_Actividad" in df.columns:
         df["Nivel_Actividad_val"] = (
@@ -274,7 +263,7 @@ def calcular_score_heuristico(row):
 
 
 # ============================================================
-# 6) REQUERIMIENTOS Y CONSTRUCCIÓN USUARIO 
+# 6) REQUERIMIENTOS Y CONSTRUCCIÓN USUARIO
 # ============================================================
 def calcular_requerimientos_nutricionales(sexo, edad, peso, talla, nivel_actividad, objetivo_nutricional):
     sexo = str(sexo).upper()
@@ -320,6 +309,7 @@ def calcular_requerimientos_nutricionales(sexo, edad, peso, talla, nivel_activid
         round(macro_grasas_g, 2)
     )
 
+
 def calcular_requerimientos_api(payload: dict) -> dict:
     calorias, prot, carb, grasas = calcular_requerimientos_nutricionales(
         sexo=payload["sexo"],
@@ -330,7 +320,11 @@ def calcular_requerimientos_api(payload: dict) -> dict:
         objetivo_nutricional=payload["objetivo_nutricional"],
     )
 
-    comidas = int(payload.get("comidas_diarias", 3)) if payload.get("comidas_diarias") else 3
+    comidas_raw = payload.get("comidas_diarias")
+    try:
+        comidas = int(comidas_raw)
+    except (TypeError, ValueError):
+        comidas = 3
     comidas = max(1, comidas)
 
     return {
@@ -339,7 +333,6 @@ def calcular_requerimientos_api(payload: dict) -> dict:
         "carbohidratos_g": carb,
         "grasas_g": grasas,
         "comidas_diarias": comidas,
-        # útil para tu UI (macro por comida)
         "calorias_por_comida": round(calorias / comidas, 2),
         "proteinas_por_comida_g": round(prot / comidas, 2),
         "carbohidratos_por_comida_g": round(carb / comidas, 2),
@@ -418,7 +411,6 @@ def construir_usuario_desde_parametros(
     dummies_obj = pd.get_dummies(user_df["Objetivo_Nutricional"], prefix="Obj")
     user_df = pd.concat([user_df, dummies_dieta, dummies_obj], axis=1)
 
-    # Alinear con columnas categóricas del entrenamiento
     for col in user_cat_cols:
         if col not in user_df.columns:
             user_df[col] = 0
@@ -427,7 +419,7 @@ def construir_usuario_desde_parametros(
 
 
 # ============================================================
-# 7) FILTRADO DURO 
+# 7) FILTRADO DURO
 # ============================================================
 def filtrar_recetas_por_restricciones_y_exclusiones(
     recetas_df,
@@ -472,19 +464,18 @@ def filtrar_recetas_por_restricciones_y_exclusiones(
 
 
 # ============================================================
-# 8) ARMAR PLAN POR DÍAS 
+# 8) ARMAR PLAN POR DÍAS  (✅ AQUÍ ESTÁ LA CORRECCIÓN)
 # ============================================================
-def armar_plan_por_dias(recs_ordenadas, dias, comidas_diarias):
+def armar_plan_por_dias(recs_ordenadas, dias, comidas_diarias, almuerzo_cena_misma: bool = False, seed: int = 42):
     """
-    Genera un plan de N días.
-    - PERMITE repetir recetas entre días (como pediste).
-    - Intenta respetar el Tipo_Comida por slot.
-    - Evita duplicados dentro del mismo día (opcional y saludable).
+    FIX:
+    - Normaliza Tipo_Comida/Categoria_Plato (lower/strip) para que los pools no queden vacíos por strings distintos.
+    - almuerzo_cena_misma=True => Cena = Almuerzo del MISMO día, pero el Almuerzo varía entre días (si hay opciones).
+    - almuerzo_cena_misma=False => intenta Cena != Almuerzo, y evita snacks/postres en Cena por fallback.
     """
-
     plan = []
 
-    # Definir slots por día
+    # 1) Slots
     if comidas_diarias >= 5:
         slots = ["Desayuno", "Almuerzo", "Cena", "Snack1", "Snack2"]
     elif comidas_diarias == 4:
@@ -495,80 +486,142 @@ def armar_plan_por_dias(recs_ordenadas, dias, comidas_diarias):
         slots_base = ["Desayuno", "Almuerzo", "Cena", "Snack1", "Snack2"]
         slots = slots_base[:max(1, comidas_diarias)]
 
-    # Helpers: armar "listas" por tipo (ya vienen ordenadas por score_modelo)
-    def snacks_mask(df):
-        # Snack = Merienda o Categoria_Plato Snack/Postre si existe
-        m = (df.get("Tipo_Comida") == "Merienda")
-        if "Categoria_Plato" in df.columns:
-            m = m | df["Categoria_Plato"].isin(["Snack", "Postre"])
-        return m
+    # 2) Copia + normalización para clasificación robusta
+    df = recs_ordenadas.copy()
 
-    listas = {
-        "Desayuno": recs_ordenadas[recs_ordenadas["Tipo_Comida"] == "Desayuno"].reset_index(drop=True),
-        "Almuerzo": recs_ordenadas[recs_ordenadas["Tipo_Comida"] == "Almuerzo"].reset_index(drop=True),
-        "Cena":     recs_ordenadas[recs_ordenadas["Tipo_Comida"] == "Cena"].reset_index(drop=True),
-        "Snack":    recs_ordenadas[snacks_mask(recs_ordenadas)].reset_index(drop=True),
-        "ALL":      recs_ordenadas.reset_index(drop=True),
-    }
+    if "Tipo_Comida" not in df.columns:
+        df["Tipo_Comida"] = ""
+    if "Categoria_Plato" not in df.columns:
+        df["Categoria_Plato"] = ""
 
-    # Elegir receta con rotación (para no repetir siempre la #1)
-    def pick(df, idx):
-        if df is None or len(df) == 0:
-            df = listas["ALL"]
-        if len(df) == 0:
-            return None
-        return df.iloc[idx % len(df)]
+    df["_tipo"] = df["Tipo_Comida"].astype(str).str.strip().str.lower()
+    df["_cat"]  = df["Categoria_Plato"].astype(str).str.strip().str.lower()
 
-    # Construcción del plan
-    for dia in range(1, dias + 1):
-        usadas_dia = set()  # evita repetidos dentro del mismo día
+    # Helpers de pertenencia (tolerantes a variaciones)
+    def is_breakfast(row):
+        return row["_tipo"] in {"desayuno"}
 
-        for slot_i, slot in enumerate(slots):
-            if slot.startswith("Desayuno"):
-                key = "Desayuno"
-            elif slot.startswith("Almuerzo"):
-                key = "Almuerzo"
-            elif slot.startswith("Cena"):
-                key = "Cena"
-            else:
-                key = "Snack"
+    def is_lunch_like(row):
+        # acepta "almuerzo" o categorias equivalentes a plato fuerte
+        return (row["_tipo"] in {"almuerzo"}) or ("plato" in row["_cat"] and "fuerte" in row["_cat"])
 
-            # índice rotativo: cambia por día y por slot
-            base_idx = (dia - 1) + (slot_i * 3)
+    def is_dinner_like(row):
+        return (row["_tipo"] in {"cena"}) or ("plato" in row["_cat"] and "fuerte" in row["_cat"])
 
-            # 1) intentamos por tipo
-            receta_sel = pick(listas.get(key), base_idx)
+    def is_snack_like(row):
+        # meriendas, snacks y postres
+        if row["_tipo"] in {"merienda", "snack"}:
+            return True
+        if "snack" in row["_cat"] or "postre" in row["_cat"]:
+            return True
+        return False
 
-            # 2) si por algún motivo repite dentro del día, buscamos la siguiente
-            if receta_sel is not None and receta_sel.get("ID_Receta") in usadas_dia:
-                receta_sel = pick(listas.get(key), base_idx + 1)
+    # 3) Pools (en orden score_modelo desc ya viene df)
+    pool_desayuno = df[df.apply(is_breakfast, axis=1)].to_dict("records")
+    pool_almuerzo = df[df.apply(is_lunch_like, axis=1)].to_dict("records")
+    pool_cena     = df[df.apply(is_dinner_like, axis=1)].to_dict("records")
+    pool_snack    = df[df.apply(is_snack_like, axis=1)].to_dict("records")
 
-            # 3) si aún así no hay, caemos a ALL
-            if receta_sel is None:
-                receta_sel = pick(listas["ALL"], base_idx)
+    # "todo" excluyendo snacks (para fallback de almuerzo/cena)
+    pool_todo_no_snack = df[~df.apply(is_snack_like, axis=1)].to_dict("records")
+    pool_todo = df.to_dict("records")
 
-            if receta_sel is None:
-                # caso extremo: no hay recetas
+    # 4) Selector (mejor score primero, con memoria y bloqueos)
+    def pick_from_pool(pool, usadas_global, usadas_hoy, banned_ids=None):
+        if banned_ids is None:
+            banned_ids = set()
+        # intento A: nuevo global y no usado hoy
+        for r in pool:
+            rid = r.get("ID_Receta")
+            if rid is None:
                 continue
+            if rid not in usadas_global and rid not in usadas_hoy and rid not in banned_ids:
+                return r
+        # intento B: no usado hoy
+        for r in pool:
+            rid = r.get("ID_Receta")
+            if rid is None:
+                continue
+            if rid not in usadas_hoy and rid not in banned_ids:
+                return r
+        return None
 
-            usadas_dia.add(receta_sel.get("ID_Receta"))
+    usadas_global = set()
+
+    for dia in range(1, dias + 1):
+        usadas_hoy = set()
+        almuerzo_hoy = None
+
+        for slot in slots:
+            receta_sel = None
+
+            # Definir pool según slot
+            if "Desayuno" in slot:
+                base_pool = pool_desayuno
+            elif "Almuerzo" in slot:
+                base_pool = pool_almuerzo
+            else:
+                base_pool = pool_cena if ("Cena" in slot) else pool_snack
+
+            # --- Lógica por slot ---
+            if "Cena" in slot and almuerzo_cena_misma and almuerzo_hoy is not None:
+                # Cena = almuerzo del mismo día
+                receta_sel = almuerzo_hoy
+            else:
+                banned = set()
+
+                # Si es Cena y NO deben ser iguales, prohibimos el almuerzo
+                if "Cena" in slot and (not almuerzo_cena_misma) and almuerzo_hoy is not None:
+                    banned.add(almuerzo_hoy["ID_Receta"])
+
+                receta_sel = pick_from_pool(base_pool, usadas_global, usadas_hoy, banned_ids=banned)
+
+                # Fallbacks inteligentes:
+                if receta_sel is None:
+                    if "Cena" in slot:
+                        # Para cena, NO uses pool_todo con snacks/postres: usa pool_todo_no_snack
+                        receta_sel = pick_from_pool(pool_todo_no_snack, usadas_global, usadas_hoy, banned_ids=banned)
+                        # Si aún nada, intenta pool_almuerzo (platos fuertes) excluyendo almuerzo_hoy
+                        if receta_sel is None and almuerzo_hoy is not None:
+                            receta_sel = pick_from_pool(pool_almuerzo, usadas_global, usadas_hoy, banned_ids=banned)
+                    elif "Almuerzo" in slot:
+                        # Almuerzo: fallback a "todo sin snack"
+                        receta_sel = pick_from_pool(pool_todo_no_snack, usadas_global, usadas_hoy)
+                    else:
+                        # Snacks: fallback a todo (si no hay snack)
+                        receta_sel = pick_from_pool(pool_todo, usadas_global, usadas_hoy)
+
+            # Último recurso (si TODO está vacío)
+            if receta_sel is None:
+                if len(pool_todo) == 0:
+                    raise RuntimeError("No hay recetas disponibles tras el filtrado.")
+                receta_sel = pool_todo[dia % len(pool_todo)]
+
+            # Guardar almuerzo del día
+            if "Almuerzo" in slot:
+                almuerzo_hoy = receta_sel
+
+            # Memoria global: siempre registrar la receta del slot,
+            # EXCEPTO cuando es Cena clonada del almuerzo (para no “gastar” dos veces la misma receta)
+            if not ("Cena" in slot and almuerzo_cena_misma and almuerzo_hoy is not None):
+                usadas_global.add(receta_sel["ID_Receta"])
+
+            usadas_hoy.add(receta_sel["ID_Receta"])
 
             plan.append({
                 "Dia": dia,
                 "Comida": slot,
                 "ID_Receta": receta_sel.get("ID_Receta"),
-                "Nombre_Receta": receta_sel.get("Nombre_Receta", ""),
+                "Nombre_Receta": receta_sel.get("Nombre_Receta"),
                 "Tipo_Comida": receta_sel.get("Tipo_Comida", ""),
-                "Categoria_Plato": receta_sel.get("Categoria_Plato", ""),
-                "Calorias": receta_sel.get("Calorias", np.nan),
-                "Proteinas": receta_sel.get("Proteinas", np.nan),
-                "Grasas": receta_sel.get("Grasas", np.nan),
-                "Carbohidratos": receta_sel.get("Carbohidratos", np.nan),
-                "score_modelo": receta_sel.get("score_modelo", np.nan),
+                "Calorias": receta_sel.get("Calorias", 0),
+                "Proteinas": receta_sel.get("Proteinas", 0),
+                "Grasas": receta_sel.get("Grasas", 0),
+                "Carbohidratos": receta_sel.get("Carbohidratos", 0),
+                "score_modelo": receta_sel.get("score_modelo", 0)
             })
 
     return pd.DataFrame(plan)
-
 
 
 # ============================================================
@@ -587,7 +640,8 @@ def recomendar_recetas_y_plan(
     dias,
     top_n_recetas=50,
     excluir_ids=None,
-    excluir_nombres=None
+    excluir_nombres=None,
+    almuerzo_cena_misma: bool = False,
 ):
     global recetas_df, feature_cols, modelo
 
@@ -622,7 +676,6 @@ def recomendar_recetas_y_plan(
     pares = pd.merge(user_df, recs, on="key", suffixes=("_user", "_receta"))
     pares.drop(columns=["key"], inplace=True)
 
-    # Alinear columnas a feature_cols (por si falta alguna dummy)
     for col in feature_cols:
         if col not in pares.columns:
             pares[col] = 0
@@ -632,7 +685,7 @@ def recomendar_recetas_y_plan(
 
     pares["score_heuristico"] = pares.apply(calcular_score_heuristico, axis=1)
 
-    pares_ordenado = pares.sort_values("score_modelo", ascending=False)
+    pares_ordenado = pares.sort_values("score_modelo", ascending=False).reset_index(drop=True)
 
     cols_salida = [
         "ID_Receta", "Nombre_Receta", "Tipo_Comida", "Categoria_Plato",
@@ -648,10 +701,13 @@ def recomendar_recetas_y_plan(
     cols_salida = [c for c in cols_salida if c in pares_ordenado.columns]
     recomendaciones_top = pares_ordenado[cols_salida].head(top_n_recetas)
 
+    seed = int(edad) * 100 + int(peso)
     plan_df = armar_plan_por_dias(
         recs_ordenadas=pares_ordenado,
         dias=dias,
-        comidas_diarias=comidas_diarias
+        comidas_diarias=comidas_diarias,
+        almuerzo_cena_misma=almuerzo_cena_misma,
+        seed=seed
     )
 
     return recomendaciones_top, plan_df
@@ -659,6 +715,10 @@ def recomendar_recetas_y_plan(
 
 def recomendar_recetas_y_plan_api(payload: dict):
     requerimientos = calcular_requerimientos_api(payload)
+
+    almuerzo_cena_misma = bool(
+        payload.get("almuerzoCenaMisma", payload.get("almuerzo_cena_misma", False))
+    )
 
     recs_df, plan_df = recomendar_recetas_y_plan(
         sexo=payload["sexo"],
@@ -674,9 +734,9 @@ def recomendar_recetas_y_plan_api(payload: dict):
         top_n_recetas=int(payload.get("top_n_recetas", 50)),
         excluir_ids=payload.get("excluir_ids"),
         excluir_nombres=payload.get("excluir_nombres"),
+        almuerzo_cena_misma=almuerzo_cena_misma,
     )
 
-    #  forzar flags a 0/1 (incluye Bajo_En_Sodio)
     cols_flags_resp = [
         "Compatible_Vegana", "Compatible_Vegetariana", "Compatible_BajaCarbo",
         "Contiene_Lactosa", "Compatible_SinGluten",
@@ -687,8 +747,6 @@ def recomendar_recetas_y_plan_api(payload: dict):
     for c in cols_flags_resp:
         if c in recs_df.columns:
             recs_df[c] = recs_df[c].apply(si_no_a_bin).astype(int)
-
-        # por si algún día incluyes estas columnas en el plan
         if c in plan_df.columns:
             plan_df[c] = plan_df[c].apply(si_no_a_bin).astype(int)
 
@@ -699,10 +757,8 @@ def recomendar_recetas_y_plan_api(payload: dict):
     }
 
 
-
-
 # ============================================================
-# 10) ENTRENAMIENTO (solo 1 vez)
+# 10) ENTRENAMIENTO (solo 1 vez)  ✅ NO TOCADO
 # ============================================================
 def _entrenar_y_guardar():
     global recetas_df, feature_cols, user_cat_cols, modelo, _MODELO_LISTO
@@ -713,7 +769,6 @@ def _entrenar_y_guardar():
     recetas_prep, cols_numericas_receta, cols_flags, cat_cols = preprocesar_recetas(recetas_raw)
     usuarios_prep, user_cat_cols_local = preprocesar_usuarios(usuarios_raw)
 
-    # Producto cartesiano
     usuarios_sample = usuarios_prep.copy()
     recetas_sample = recetas_prep.copy()
 
@@ -728,10 +783,8 @@ def _entrenar_y_guardar():
     )
     pairs_df.drop(columns=["key"], inplace=True)
 
-    # Score heurístico
     pairs_df["score_heuristico"] = pairs_df.apply(calcular_score_heuristico, axis=1)
 
-    # Features (igual a tu notebook)
     feature_cols_usuario = [
         "Edad", "Peso", "Talla", "Comidas_Diarias",
         "Calorias_Ajustadas", "Macro_Prot_g", "Macro_Carb_g", "Macro_Grasas_g",
@@ -769,14 +822,12 @@ def _entrenar_y_guardar():
     print(f"[NutriSmart] Entrenamiento OK | MSE={mse:.4f} RMSE={rmse:.4f} R2={r2:.4f}")
     print(f"[NutriSmart] Features: {len(feature_cols_local)} | Pairs: {pairs_df.shape}")
 
-    # Guardar globals en memoria
     recetas_df = recetas_prep
     feature_cols = feature_cols_local
     user_cat_cols = user_cat_cols_local
     modelo = modelo_local
     _MODELO_LISTO = True
 
-    # Guardar artefactos
     joblib.dump(modelo_local, MODEL_PATH)
     joblib.dump(
         {
@@ -787,10 +838,8 @@ def _entrenar_y_guardar():
     )
     joblib.dump(recetas_prep, RECETAS_PREP_PATH)
 
-    # Guardar huella de datasets
     fp = _fingerprint_datasets()
     DATA_FINGERPRINT_PATH.write_text(fp, encoding="utf-8")
-
 
 
 # ============================================================
@@ -816,7 +865,7 @@ def _artefactos_validos() -> bool:
         fp_guardado = DATA_FINGERPRINT_PATH.read_text(encoding="utf-8").strip()
         fp_actual = _fingerprint_datasets()
         return fp_guardado == fp_actual
-    return True  # si no hay fingerprint, igual aceptamos
+    return True
 
 
 def _cargar_artefactos():
@@ -840,7 +889,6 @@ def inicializar_modelo():
     if MODEL_PATH.exists() and META_PATH.exists() and RECETAS_PREP_PATH.exists():
         _cargar_artefactos()
         return
-
 
     print("[NutriSmart] No hay artefactos válidos. Entrenando 1 vez...")
     _entrenar_y_guardar()
